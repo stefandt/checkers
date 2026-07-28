@@ -113,6 +113,16 @@
         <h1 class="text-4xl font-bold text-white mb-2">Шашки P2P</h1>
         <p class="text-gray-400 text-sm">Грайте з друзями безпосередньо у браузері</p>
         
+        <button onclick="startLocalGame()" class="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg transition-colors shadow-lg">
+            Грати локально (На 1 екрані)
+        </button>
+
+        <div class="flex items-center justify-center space-x-2 my-4">
+            <hr class="w-1/3 border-gray-600">
+            <span class="text-gray-500 text-sm font-bold">АБО МЕРЕЖА</span>
+            <hr class="w-1/3 border-gray-600">
+        </div>
+
         <button onclick="createGame()" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors">
             Створити гру
         </button>
@@ -124,9 +134,9 @@
         </div>
 
         <div class="space-y-3">
-            <input type="text" id="join-pin" placeholder="Введіть 4 цифри коду" maxlength="4" 
-                class="w-full py-3 px-4 bg-gray-700 text-white border border-gray-600 rounded-lg text-center text-xl tracking-widest focus:outline-none focus:border-blue-500">
-            <button onclick="joinGame()" class="w-full py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-lg transition-colors">
+            <input type="text" id="join-pin" placeholder="Введіть код гри" maxlength="5" 
+                class="w-full py-3 px-4 bg-gray-700 text-white border border-gray-600 rounded-lg text-center text-xl tracking-widest uppercase focus:outline-none focus:border-emerald-500">
+            <button onclick="joinGame()" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg transition-colors shadow-lg">
                 Приєднатися
             </button>
         </div>
@@ -136,7 +146,7 @@
     <div id="lobby-screen" class="hidden w-full max-w-md bg-gray-800 p-8 rounded-xl shadow-2xl text-center space-y-6">
         <h2 class="text-2xl font-bold text-white">Кімната створена!</h2>
         <p class="text-gray-300">Ваш код для запрошення:</p>
-        <div class="text-5xl font-mono font-bold text-blue-400 tracking-widest my-4" id="lobby-pin">0000</div>
+        <div class="text-5xl font-mono font-bold text-blue-400 tracking-widest my-4 uppercase" id="lobby-pin">-----</div>
         
         <p class="text-sm text-gray-400">Або надішліть це посилання:</p>
         <div class="flex">
@@ -155,7 +165,7 @@
         <div class="w-full flex justify-between items-center bg-gray-800 p-4 rounded-xl shadow-md">
             <div id="player-color-badge" class="px-4 py-2 rounded-lg font-bold text-sm bg-gray-700">Ви: Білі</div>
             <div id="turn-indicator" class="text-xl font-bold text-blue-400">Хід білих</div>
-            <div class="text-gray-400 text-sm font-mono" id="game-pin-display">Код: 0000</div>
+            <div class="text-gray-400 text-sm font-mono uppercase" id="game-pin-display">Код: -----</div>
         </div>
 
         <div id="board" class="board-container"></div>
@@ -179,12 +189,20 @@
         let selectedPiece = null;
         let multiJumpSquare = null; // Зберігає координати шашки, яка повинна продовжити бити
         let mustJumpPieces = []; // Масив шашок, які зобов'язані бити поточного ходу
+        let isLocalMode = false; // Прапорець для гри на одному екрані
 
         // --- МЕРЕЖА (PeerJS) ---
         let peer = null;
         let conn = null;
-        const PEER_PREFIX = 'ua-checkers-p2p-v1-'; 
         let currentPin = '';
+
+        // --- ПЕРЕХОПЛЕННЯ ОБМЕЖЕНЬ БЕЗПЕКИ ---
+        window.addEventListener('error', function(e) {
+            if (e.message && e.message.includes('WebSocket') && e.message.includes('Canvas')) {
+                showModal('Обмеження середовища 🔒', 'Мережеві функції заблоковані у режимі попереднього перегляду з міркувань безпеки.\n\nЩоб грати по мережі, завантажте цей файл та розмістіть його на GitHub Pages. А поки ви можете зіграти у Локальному режимі!');
+                e.preventDefault();
+            }
+        });
 
         // --- ІНІЦІАЛІЗАЦІЯ ---
         function showScreen(id) {
@@ -207,27 +225,38 @@
             document.getElementById('modal').classList.add('hidden');
         }
 
-        function generatePin() {
-            return Math.floor(1000 + Math.random() * 9000).toString();
+        function copyLink() {
+            const link = document.getElementById('invite-link');
+            link.select();
+            document.execCommand('copy');
+            const btn = event.target;
+            btn.innerText = 'Скопійовано!';
+            setTimeout(() => btn.innerText = 'Копіювати', 2000);
+        }
+
+        // --- STREAMING_CHUNK: Логіка підключення мережі... ---
+        // Генерація короткого ID (як у Морському Бої)
+        function generateShortID() {
+            return Math.random().toString(36).substring(2, 7).toUpperCase();
         }
 
         // Перевірка URL на наявність запрошення
         window.onload = () => {
             const params = new URLSearchParams(window.location.search);
             const joinPin = params.get('join');
-            if (joinPin && joinPin.length === 4) {
-                document.getElementById('join-pin').value = joinPin;
-                joinGame();
+            if (joinPin && joinPin.length === 5) {
+                document.getElementById('join-pin').value = joinPin.toUpperCase();
+                // Невелика затримка для ініціалізації
+                setTimeout(() => joinGame(joinPin.toUpperCase()), 500);
             }
         };
 
-        // --- STREAMING_CHUNK: Логіка підключення... ---
         // Створення гри (Хост)
         function createGame() {
-            currentPin = generatePin();
-            const peerId = PEER_PREFIX + currentPin;
+            currentPin = generateShortID();
             
-            peer = new Peer(peerId);
+            // Створюємо Peer з конкретним ID
+            peer = new Peer(currentPin);
             
             peer.on('open', (id) => {
                 showScreen('lobby-screen');
@@ -240,25 +269,26 @@
             peer.on('connection', (connection) => {
                 conn = connection;
                 setupConnection();
+                
                 // Хост завжди грає білими
                 myColor = 'white';
-                startGame();
+                startGame(true);
                 
                 // Надсилаємо клієнту команду почати гру і його колір
                 conn.send({ type: 'start', color: 'black', board: boardState });
             });
 
             peer.on('error', (err) => {
-                showModal('Помилка', 'Не вдалося створити кімнату. Спробуйте ще раз.');
+                showModal('Помилка', 'Не вдалося створити кімнату. Сервер перевантажений або код зайнятий. Спробуйте ще раз.');
                 console.error(err);
             });
         }
 
         // Приєднання до гри (Клієнт)
-        function joinGame() {
-            const pin = document.getElementById('join-pin').value.trim();
-            if (pin.length !== 4) {
-                showModal('Увага', 'Введіть коректний 4-значний код.');
+        function joinGame(idToJoin = null) {
+            const pin = idToJoin || document.getElementById('join-pin').value.trim().toUpperCase();
+            if (pin.length !== 5) {
+                showModal('Увага', 'Введіть коректний 5-значний код.');
                 return;
             }
 
@@ -266,44 +296,40 @@
             peer = new Peer(); // Клієнт отримує випадковий ID
 
             peer.on('open', () => {
-                conn = peer.connect(PEER_PREFIX + pin);
+                // Підключаємось до Хоста
+                conn = peer.connect(pin);
                 
                 conn.on('open', () => {
                     setupConnection();
+                    // Чекаємо команди 'start' від хоста для ініціалізації дошки
                 });
 
                 conn.on('error', () => {
-                    showModal('Помилка', 'Кімнату не знайдено. Перевірте код.');
+                    showModal('Помилка', 'Не вдалося приєднатися до кімнати.');
                 });
             });
 
             peer.on('error', (err) => {
-                showModal('Помилка', 'Не вдалося підключитись.');
+                showModal('Помилка', 'Мережева помилка. Перевірте код або підключення.');
                 console.error(err);
             });
         }
 
-        function copyLink() {
-            const link = document.getElementById('invite-link');
-            link.select();
-            document.execCommand('copy');
-            const btn = event.target;
-            btn.innerText = 'Скопійовано!';
-            setTimeout(() => btn.innerText = 'Копіювати', 2000);
-        }
-
-        // Налаштування слухачів з'єднання
+        // Налаштування слухачів з'єднання для обох гравців
         function setupConnection() {
             conn.on('data', (data) => {
                 if (data.type === 'start') {
+                    // Клієнт отримує початковий стан
                     myColor = data.color;
                     boardState = data.board;
                     startGame(false);
                 } else if (data.type === 'move') {
+                    // Отримуємо хід
                     boardState = data.board;
                     currentTurn = data.nextTurn;
                     selectedPiece = null;
                     multiJumpSquare = null;
+                    mustJumpPieces = [];
                     updateGameState();
                 } else if (data.type === 'win') {
                     showModal('Кінець гри', `Переміг гравець (${data.winner})!`, true);
@@ -316,7 +342,32 @@
         }
 
         // --- STREAMING_CHUNK: Ініціалізація та відмальовка дошки... ---
+        function startLocalGame() {
+            isLocalMode = true;
+            myColor = 'white'; // У локальній грі дошка завжди повернута від білих
+            
+            showScreen('game-screen');
+            document.getElementById('game-pin-display').innerText = 'Локальна гра';
+            
+            const badge = document.getElementById('player-color-badge');
+            badge.innerText = `Режим: 1 Екран`;
+            badge.className = `px-4 py-2 rounded-lg font-bold text-sm border bg-purple-100 text-purple-800 border-purple-300`;
+
+            // Стандартна розстановка шашок
+            boardState = Array(8).fill().map(() => Array(8).fill(0));
+            for (let y = 0; y < 8; y++) {
+                for (let x = 0; x < 8; x++) {
+                    if ((x + y) % 2 !== 0) {
+                        if (y < 3) boardState[y][x] = -1; // Чорні
+                        else if (y > 4) boardState[y][x] = 1;  // Білі
+                    }
+                }
+            }
+            updateGameState();
+        }
+
         function startGame(isHost = true) {
+            isLocalMode = false;
             showScreen('game-screen');
             document.getElementById('game-pin-display').innerText = 'Код: ' + currentPin;
             
@@ -344,8 +395,10 @@
             document.getElementById('turn-indicator').className = `text-xl font-bold ${currentTurn === 'white' ? 'text-gray-200' : 'text-gray-500'}`;
             
             checkWinCondition();
-            if (currentTurn === myColor) {
+            if (isLocalMode || currentTurn === myColor) {
                 updateMustJumpStatus();
+            } else {
+                mustJumpPieces = [];
             }
             renderBoard();
         }
@@ -356,7 +409,7 @@
             
             let possibleMoves = [];
             let possibleJumps = [];
-            if (selectedPiece && currentTurn === myColor) {
+            if (selectedPiece && (isLocalMode || currentTurn === myColor)) {
                 possibleJumps = getValidJumps(selectedPiece.x, selectedPiece.y, boardState);
                 if (possibleJumps.length === 0 && mustJumpPieces.length === 0) {
                     possibleMoves = getValidNormalMoves(selectedPiece.x, selectedPiece.y, boardState);
@@ -365,9 +418,10 @@
 
             for (let row = 0; row < 8; row++) {
                 for (let col = 0; col < 8; col++) {
-                    // РОЗВОРОТ ДОШКИ: Якщо граємо за чорних, малюємо знизу вгору і справа наліво
-                    const y = myColor === 'black' ? 7 - row : row;
-                    const x = myColor === 'black' ? 7 - col : col;
+                    // РОЗВОРОТ ДОШКИ: Тільки в мережевій грі за чорних
+                    const isFlipped = !isLocalMode && myColor === 'black';
+                    const y = isFlipped ? 7 - row : row;
+                    const x = isFlipped ? 7 - col : col;
 
                     const cell = document.createElement('div');
                     const isDarkCell = (x + y) % 2 !== 0;
@@ -420,12 +474,14 @@
 
         // --- STREAMING_CHUNK: Логіка взаємодії (кліки)... ---
         function onCellClick(x, y) {
-            if (currentTurn !== myColor) return; // Не наш хід
+            if (!isLocalMode && currentTurn !== myColor) return; // Не наш хід в мережі
 
             const pieceVal = boardState[y][x];
+            const isWhiteTurn = currentTurn === 'white';
+            const isCurrentPlayerPiece = pieceVal !== 0 && (isWhiteTurn ? pieceVal > 0 : pieceVal < 0);
             
-            // Якщо клікнули на свою фігуру
-            if (pieceVal !== 0 && Math.sign(pieceVal) === (myColor === 'white' ? 1 : -1)) {
+            // Якщо клікнули на свою фігуру (відповідно до поточного ходу)
+            if (isCurrentPlayerPiece) {
                 // Якщо є серійне взяття, ми не можемо обрати іншу фігуру
                 if (multiJumpSquare && (x !== multiJumpSquare.x || y !== multiJumpSquare.y)) {
                     return; 
@@ -471,7 +527,9 @@
             
             let continueTurn = false;
 
-            if (isJump && !wasPromoted) {
+            // Правило "Російських шашок": якщо шашка перетворилась на дамку під час взяття,
+            // вона продовжує бити цим же ходом вже за правилами дамки (прибрано !wasPromoted).
+            if (isJump) {
                 // Перевіряємо, чи може ЦЯ Ж шашка бити далі
                 const furtherJumps = getValidJumps(dx, dy, boardState);
                 if (furtherJumps.length > 0) {
@@ -491,8 +549,10 @@
 
             updateGameState();
             
-            // Відправляємо стан супернику
-            conn.send({ type: 'move', board: boardState, nextTurn: currentTurn });
+            // Відправляємо стан супернику, якщо це мережева гра
+            if (!isLocalMode && conn) {
+                conn.send({ type: 'move', board: boardState, nextTurn: currentTurn });
+            }
         }
 
         // --- STREAMING_CHUNK: Правила шашок (Дамки, Ходи, Биття)... ---
@@ -632,10 +692,12 @@
                 return;
             }
 
+            const checkColor = isLocalMode ? currentTurn : myColor;
+
             for (let y = 0; y < 8; y++) {
                 for (let x = 0; x < 8; x++) {
                     const piece = boardState[y][x];
-                    if ((myColor === 'white' && piece > 0) || (myColor === 'black' && piece < 0)) {
+                    if ((checkColor === 'white' && piece > 0) || (checkColor === 'black' && piece < 0)) {
                         if (getValidJumps(x, y, boardState).length > 0) {
                             mustJumpPieces.push({ x, y });
                         }
