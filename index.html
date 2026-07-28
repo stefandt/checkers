@@ -1,1 +1,356 @@
 
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Шашки по мережі</title>
+    <!-- Підключення PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- Підключення Tailwind CSS для швидкого стилювання -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .board {
+            display: grid;
+            grid-template-columns: repeat(8, 50px);
+            grid-template-rows: repeat(8, 50px);
+            border: 4px solid #4a3018;
+            width: max-content;
+            margin: 0 auto;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+        }
+        @media (min-width: 640px) {
+            .board {
+                grid-template-columns: repeat(8, 70px);
+                grid-template-rows: repeat(8, 70px);
+            }
+        }
+        .cell {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+        }
+        .cell.light { background-color: #f0d9b5; cursor: default; }
+        .cell.dark { background-color: #b58863; }
+        .cell.selected { background-color: #a3a830; }
+        .cell.possible-move { position: relative; }
+        .cell.possible-move::after {
+            content: '';
+            width: 20%;
+            height: 20%;
+            background-color: rgba(0, 0, 0, 0.3);
+            border-radius: 50%;
+            position: absolute;
+        }
+        
+        .piece {
+            width: 80%;
+            height: 80%;
+            border-radius: 50%;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.5), inset 0 2px 4px rgba(255,255,255,0.3);
+            transition: transform 0.2s;
+        }
+        .piece:hover { transform: scale(1.05); }
+        .piece.white { background-color: #f8f9fa; border: 2px solid #ccc; }
+        .piece.black { background-color: #212529; border: 2px solid #000; }
+        .piece.king::after {
+            content: '👑';
+            font-size: 1.5rem;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body class="bg-stone-200 text-stone-800 font-sans min-h-screen flex flex-col items-center py-10">
+
+    <h1 class="text-4xl font-bold mb-6 text-stone-700 drop-shadow-md">Мережеві Шашки (P2P)</h1>
+
+    <!-- Меню підключення -->
+    <div id="lobby-ui" class="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center">
+        <h2 class="text-2xl mb-4 font-semibold">Створення гри</h2>
+        
+        <div id="loading" class="text-blue-600 font-bold mb-4">Генеруємо підключення...</div>
+        
+        <div id="share-container" style="display: none;">
+            <p class="mb-2 text-sm text-gray-600">Надішліть це посилання супернику, щоб він міг приєднатися:</p>
+            <input type="text" id="invite-link" readonly class="w-full p-2 border rounded bg-gray-50 text-sm mb-4 text-center cursor-pointer hover:bg-gray-100" onclick="this.select(); document.execCommand('copy'); alert('Посилання скопійовано!');">
+            <p class="text-sm text-gray-500 animate-pulse">Очікування суперника...</p>
+        </div>
+    </div>
+
+    <!-- Ігровий інтерфейс -->
+    <div id="game-ui" style="display: none;" class="flex flex-col items-center">
+        <div class="bg-white px-6 py-4 rounded-lg shadow-md mb-6 w-full max-w-lg text-center flex justify-between items-center">
+            <div>
+                <p class="text-sm text-gray-500 uppercase tracking-wide">Ви граєте за</p>
+                <p id="player-color-text" class="text-xl font-bold capitalize"></p>
+            </div>
+            <div class="text-right">
+                <p class="text-sm text-gray-500 uppercase tracking-wide">Зараз хід</p>
+                <p id="turn-text" class="text-xl font-bold capitalize text-blue-600"></p>
+            </div>
+        </div>
+
+        <div id="winner-banner" class="hidden bg-green-500 text-white text-2xl font-bold px-8 py-4 rounded-lg mb-6 shadow-lg"></div>
+
+        <div id="board" class="board"></div>
+    </div>
+
+    <script>
+        // Ініціалізація PeerJS
+        const peer = new Peer();
+        let peerConnection = null;
+        
+        // Ігрові змінні
+        let myColor = null; // 'white' або 'black'
+        let currentTurn = 'white'; // Білі завжди починають
+        let selectedSquare = null;
+        
+        // Дошка: 0 - пусто, 1 - біла, 2 - біла дамка, -1 - чорна, -2 - чорна дамка
+        let boardState = Array(8).fill(null).map(() => Array(8).fill(0));
+
+        // URL параметри
+        const urlParams = new URLSearchParams(window.location.search);
+        const joinId = urlParams.get('join');
+
+        // === МЕРЕЖЕВА ЛОГІКА ===
+        
+        peer.on('open', (id) => {
+            document.getElementById('loading').style.display = 'none';
+            
+            if (joinId) {
+                // Якщо є joinId, ми підключаємось (ми - чорні)
+                document.getElementById('lobby-ui').innerHTML = '<h2 class="text-2xl font-bold text-blue-600">Підключення до хоста...</h2>';
+                connectToPeer(joinId);
+            } else {
+                // Ми хост гри (ми - білі)
+                myColor = 'white';
+                const inviteUrl = window.location.origin + window.location.pathname + '?join=' + id;
+                document.getElementById('invite-link').value = inviteUrl;
+                document.getElementById('share-container').style.display = 'block';
+            }
+        });
+
+        // Хост приймає підключення
+        peer.on('connection', (conn) => {
+            if (peerConnection) return; // Вже підключені
+            setupConnection(conn);
+            startGame('white');
+            
+            // Надсилаємо гостю команду почати
+            setTimeout(() => conn.send({ type: 'START', color: 'black' }), 500);
+        });
+
+        function connectToPeer(hostId) {
+            const conn = peer.connect(hostId);
+            setupConnection(conn);
+        }
+
+        function setupConnection(conn) {
+            peerConnection = conn;
+            
+            conn.on('data', (data) => {
+                if (data.type === 'START') {
+                    startGame(data.color);
+                }
+                if (data.type === 'MOVE') {
+                    applyMove(data.sx, data.sy, data.dx, data.dy);
+                    currentTurn = currentTurn === 'white' ? 'black' : 'white';
+                    checkWinner();
+                    updateUI();
+                }
+            });
+
+            conn.on('close', () => {
+                alert('Суперник відключився!');
+                location.reload();
+            });
+        }
+
+        // === ІГРОВА ЛОГІКА ===
+
+        function startGame(color) {
+            myColor = color;
+            document.getElementById('lobby-ui').style.display = 'none';
+            document.getElementById('game-ui').style.display = 'flex';
+            
+            // Початкова розстановка (білі знизу, чорні зверху)
+            for (let y = 0; y < 8; y++) {
+                for (let x = 0; x < 8; x++) {
+                    if ((x + y) % 2 !== 0) { // Гра тільки на темних
+                        if (y < 3) boardState[y][x] = -1; // Чорні
+                        if (y > 4) boardState[y][x] = 1;  // Білі
+                    }
+                }
+            }
+            
+            updateUI();
+        }
+
+        function updateUI() {
+            document.getElementById('player-color-text').innerText = myColor === 'white' ? 'Білі' : 'Чорні';
+            document.getElementById('turn-text').innerText = currentTurn === 'white' ? 'Білі' : 'Чорні';
+            
+            if(myColor === currentTurn) {
+                document.getElementById('turn-text').classList.add('text-green-600');
+                document.getElementById('turn-text').classList.remove('text-red-600', 'text-blue-600');
+            } else {
+                document.getElementById('turn-text').classList.add('text-red-600');
+                document.getElementById('turn-text').classList.remove('text-green-600', 'text-blue-600');
+            }
+
+            renderBoard();
+        }
+
+        function renderBoard() {
+            const boardEl = document.getElementById('board');
+            boardEl.innerHTML = ''; // Очищення
+
+            // Якщо ми граємо за чорних, повертаємо дошку для зручності (необов'язково, але зручно)
+            // Для простоти коду будемо малювати як є: білі внизу(y=7), чорні вгорі(y=0).
+
+            for (let y = 0; y < 8; y++) {
+                for (let x = 0; x < 8; x++) {
+                    const isDark = (x + y) % 2 !== 0;
+                    const cell = document.createElement('div');
+                    cell.className = `cell ${isDark ? 'dark' : 'light'}`;
+                    
+                    if (selectedSquare && selectedSquare.x === x && selectedSquare.y === y) {
+                        cell.classList.add('selected');
+                    }
+
+                    const pieceVal = boardState[y][x];
+                    if (pieceVal !== 0) {
+                        const piece = document.createElement('div');
+                        let classes = 'piece ';
+                        if (pieceVal === 1 || pieceVal === 2) classes += 'white ';
+                        if (pieceVal === -1 || pieceVal === -2) classes += 'black ';
+                        if (Math.abs(pieceVal) === 2) classes += 'king ';
+                        
+                        piece.className = classes;
+                        cell.appendChild(piece);
+                    }
+
+                    // Обробка кліку
+                    if (isDark) {
+                        cell.onclick = () => handleSquareClick(x, y);
+                    }
+
+                    boardEl.appendChild(cell);
+                }
+            }
+        }
+
+        function handleSquareClick(x, y) {
+            // Перевірка, чи зараз наш хід
+            if (currentTurn !== myColor) return;
+
+            const pieceVal = boardState[y][x];
+            const isMyPiece = (myColor === 'white' && pieceVal > 0) || (myColor === 'black' && pieceVal < 0);
+
+            if (isMyPiece) {
+                // Вибір своєї шашки
+                selectedSquare = { x, y };
+                updateUI();
+            } else if (selectedSquare) {
+                // Спроба ходу
+                const sx = selectedSquare.x;
+                const sy = selectedSquare.y;
+
+                if (isValidMove(sx, sy, x, y)) {
+                    applyMove(sx, sy, x, y);
+                    selectedSquare = null;
+                    currentTurn = currentTurn === 'white' ? 'black' : 'white';
+                    
+                    // Відправка ходу супернику
+                    peerConnection.send({ type: 'MOVE', sx, sy, dx: x, dy: y });
+                    
+                    checkWinner();
+                    updateUI();
+                }
+            }
+        }
+
+        function isValidMove(sx, sy, dx, dy) {
+            // Клітинка має бути порожньою
+            if (boardState[dy][dx] !== 0) return false;
+
+            const piece = boardState[sy][sx];
+            const isKing = Math.abs(piece) === 2;
+            const diffX = dx - sx;
+            const diffY = dy - sy;
+            
+            // Напрямок для звичайних шашок (білі йдуть вгору -y, чорні вниз +y)
+            const forwardDir = myColor === 'white' ? -1 : 1;
+
+            // Звичайний хід (на 1 клітинку по діагоналі)
+            if (Math.abs(diffX) === 1 && Math.abs(diffY) === 1) {
+                if (!isKing && Math.sign(diffY) !== forwardDir) return false; // Назад не можна
+                return true;
+            }
+
+            // Хід зі взяттям (на 2 клітинки)
+            if (Math.abs(diffX) === 2 && Math.abs(diffY) === 2) {
+                // Дамки можуть бити в обидві сторони, звичайні - бажано тільки вперед (але за міжнародними правилами можуть і назад. Для простоти дозволимо назад).
+                const midX = sx + diffX / 2;
+                const midY = sy + diffY / 2;
+                const midPiece = boardState[midY][midX];
+                
+                // Перевірка чи є там чужа шашка
+                const isEnemy = (myColor === 'white' && midPiece < 0) || (myColor === 'black' && midPiece > 0);
+                
+                return isEnemy;
+            }
+
+            return false;
+        }
+
+        function applyMove(sx, sy, dx, dy) {
+            let piece = boardState[sy][sx];
+            
+            // Переміщення
+            boardState[dy][dx] = piece;
+            boardState[sy][sx] = 0;
+
+            // Якщо це було взяття - видаляємо збиту шашку
+            if (Math.abs(dx - sx) === 2) {
+                boardState[sy + (dy - sy) / 2][sx + (dx - sx) / 2] = 0;
+            }
+
+            // Перетворення на дамку
+            if (piece === 1 && dy === 0) boardState[dy][dx] = 2; // Біла
+            if (piece === -1 && dy === 7) boardState[dy][dx] = -2; // Чорна
+        }
+
+        function checkWinner() {
+            let whiteCount = 0;
+            let blackCount = 0;
+            
+            for (let y = 0; y < 8; y++) {
+                for (let x = 0; x < 8; x++) {
+                    if (boardState[y][x] > 0) whiteCount++;
+                    if (boardState[y][x] < 0) blackCount++;
+                }
+            }
+
+            const banner = document.getElementById('winner-banner');
+            
+            if (whiteCount === 0) {
+                banner.innerText = "Перемогли ЧОРНІ! 🏆";
+                banner.classList.remove('hidden');
+                currentTurn = null; // Зупинка гри
+            } else if (blackCount === 0) {
+                banner.innerText = "Перемогли БІЛІ! 🏆";
+                banner.classList.remove('hidden');
+                currentTurn = null; 
+            }
+        }
+    </script>
+</body>
+</html>
