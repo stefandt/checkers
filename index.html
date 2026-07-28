@@ -189,6 +189,7 @@
         let selectedPiece = null;
         let multiJumpSquare = null; // Зберігає координати шашки, яка повинна продовжити бити
         let mustJumpPieces = []; // Масив шашок, які зобов'язані бити поточного ходу
+        let pendingCapturedPieces = []; // Побиті шашки знімаються лише після завершення серії
         let isLocalMode = false; // Прапорець для гри на одному екрані
 
         // --- МЕРЕЖА (PeerJS) ---
@@ -267,15 +268,26 @@
             });
 
             peer.on('connection', (connection) => {
+                // Кімната розрахована лише на двох гравців. Не дозволяємо новому
+                // підключенню замінити активне з'єднання і скинути поточну партію.
+                if (conn) {
+                    const rejectConnection = () => connection.close();
+                    if (connection.open) rejectConnection();
+                    else connection.on('open', rejectConnection);
+                    return;
+                }
+
                 conn = connection;
-                setupConnection();
-                
-                // Хост завжди грає білими
-                myColor = 'white';
-                startGame(true);
-                
-                // Надсилаємо клієнту команду почати гру і його колір
-                conn.send({ type: 'start', color: 'black', board: boardState });
+                setupConnection(connection);
+
+                connection.on('open', () => {
+                    // Хост завжди грає білими
+                    myColor = 'white';
+                    startGame(true);
+
+                    // Надсилаємо стан лише після готовності каналу до запису
+                    connection.send({ type: 'start', color: 'black', board: boardState });
+                });
             });
 
             peer.on('error', (err) => {
@@ -300,7 +312,7 @@
                 conn = peer.connect(pin);
                 
                 conn.on('open', () => {
-                    setupConnection();
+                    setupConnection(conn);
                     // Чекаємо команди 'start' від хоста для ініціалізації дошки
                 });
 
@@ -316,17 +328,23 @@
         }
 
         // Налаштування слухачів з'єднання для обох гравців
-        function setupConnection() {
-            conn.on('data', (data) => {
+        function setupConnection(connection) {
+            connection.on('data', (data) => {
+                if (connection !== conn) return;
+
                 if (data.type === 'start') {
                     // Клієнт отримує початковий стан
                     myColor = data.color;
                     boardState = data.board;
+                    pendingCapturedPieces = [];
                     startGame(false);
                 } else if (data.type === 'move') {
                     // Отримуємо хід
                     boardState = data.board;
                     currentTurn = data.nextTurn;
+                    pendingCapturedPieces = Array.isArray(data.pendingCapturedPieces)
+                        ? data.pendingCapturedPieces
+                        : [];
                     selectedPiece = null;
                     multiJumpSquare = null;
                     mustJumpPieces = [];
@@ -336,7 +354,9 @@
                 }
             });
 
-            conn.on('close', () => {
+            connection.on('close', () => {
+                if (connection !== conn) return;
+                conn = null;
                 showModal('Зв\'язок втрачено', 'Суперник вийшов з гри.', true);
             });
         }
@@ -355,6 +375,7 @@
 
             // Стандартна розстановка шашок
             boardState = Array(8).fill().map(() => Array(8).fill(0));
+            pendingCapturedPieces = [];
             for (let y = 0; y < 8; y++) {
                 for (let x = 0; x < 8; x++) {
                     if ((x + y) % 2 !== 0) {
@@ -378,6 +399,11 @@
             if (isHost) {
                 // Стандартна розстановка шашок
                 boardState = Array(8).fill().map(() => Array(8).fill(0));
+                currentTurn = 'white';
+                selectedPiece = null;
+                multiJumpSquare = null;
+                mustJumpPieces = [];
+                pendingCapturedPieces = [];
                 for (let y = 0; y < 8; y++) {
                     for (let x = 0; x < 8; x++) {
                         if ((x + y) % 2 !== 0) {
@@ -394,7 +420,9 @@
             document.getElementById('turn-indicator').innerText = currentTurn === 'white' ? 'Хід Білих' : 'Хід Чорних';
             document.getElementById('turn-indicator').className = `text-xl font-bold ${currentTurn === 'white' ? 'text-gray-200' : 'text-gray-500'}`;
             
-            checkWinCondition();
+            if (pendingCapturedPieces.length === 0) {
+                checkWinCondition();
+            }
             if (isLocalMode || currentTurn === myColor) {
                 updateMustJumpStatus();
             } else {
@@ -446,7 +474,7 @@
                         }
 
                         // Підсвітка фігур, якими ОБОВ'ЯЗКОВО треба бити
-                        if (currentTurn === myColor) {
+                        if (isLocalMode || currentTurn === myColor) {
                             const isMustJump = mustJumpPieces.some(p => p.x === x && p.y === y);
                             if (isMustJump) piece.classList.add('must-jump');
                         }
@@ -523,7 +551,7 @@
         }
 
         function executeMove(sx, sy, dx, dy, isJump) {
-            let wasPromoted = applyMoveAndGetPromoted(sx, sy, dx, dy);
+            applyMoveAndGetPromoted(sx, sy, dx, dy, isJump);
             
             let continueTurn = false;
 
@@ -541,6 +569,7 @@
             }
 
             if (!continueTurn) {
+                finalizeCapturedPieces();
                 currentTurn = currentTurn === 'white' ? 'black' : 'white';
                 selectedPiece = null;
                 multiJumpSquare = null;
@@ -551,33 +580,39 @@
             
             // Відправляємо стан супернику, якщо це мережева гра
             if (!isLocalMode && conn) {
-                conn.send({ type: 'move', board: boardState, nextTurn: currentTurn });
+                conn.send({
+                    type: 'move',
+                    board: boardState,
+                    nextTurn: currentTurn,
+                    pendingCapturedPieces: pendingCapturedPieces
+                });
             }
         }
 
         // --- STREAMING_CHUNK: Правила шашок (Дамки, Ходи, Биття)... ---
-        function applyMoveAndGetPromoted(sx, sy, dx, dy) {
+        function applyMoveAndGetPromoted(sx, sy, dx, dy, isJump) {
             let piece = boardState[sy][sx];
             let wasPromoted = false;
             
             boardState[dy][dx] = piece;
             boardState[sy][sx] = 0;
 
-            // Видаляємо всі збиті шашки на шляху (важливо для дамок)
-            const diffX = dx - sx;
-            const diffY = dy - sy;
-            const dirX = Math.sign(diffX);
-            const dirY = Math.sign(diffY);
-            
-            let cx = sx + dirX;
-            let cy = sy + dirY;
-            
-            while (cx !== dx && cy !== dy) {
-                if (boardState[cy][cx] !== 0) {
-                    boardState[cy][cx] = 0;
+            if (isJump) {
+                // За правилами російських шашок побиті фігури залишаються
+                // перешкодами до завершення всієї серії взяттів.
+                const dirX = Math.sign(dx - sx);
+                const dirY = Math.sign(dy - sy);
+                let cx = sx + dirX;
+                let cy = sy + dirY;
+
+                while (cx !== dx && cy !== dy) {
+                    if (boardState[cy][cx] !== 0) {
+                        pendingCapturedPieces.push({ x: cx, y: cy });
+                        break;
+                    }
+                    cx += dirX;
+                    cy += dirY;
                 }
-                cx += dirX;
-                cy += dirY;
             }
 
             // Перетворення на дамку
@@ -591,6 +626,17 @@
             }
             
             return wasPromoted;
+        }
+
+        function isPendingCaptured(x, y) {
+            return pendingCapturedPieces.some(piece => piece.x === x && piece.y === y);
+        }
+
+        function finalizeCapturedPieces() {
+            for (const piece of pendingCapturedPieces) {
+                boardState[piece.y][piece.x] = 0;
+            }
+            pendingCapturedPieces = [];
         }
 
         function getValidJumps(startX, startY, board) {
@@ -612,6 +658,9 @@
                         const currentPiece = board[cy][cx];
                         
                         if (currentPiece !== 0) {
+                            if (isPendingCaptured(cx, cy)) {
+                                break;
+                            }
                             if (Math.sign(currentPiece) === Math.sign(piece)) {
                                 break; // Своя шашка - далі не можна
                             } else {
@@ -637,7 +686,12 @@
                         const midPiece = board[midY][midX];
                         const endPiece = board[endY][endX];
                         
-                        if (midPiece !== 0 && Math.sign(midPiece) !== Math.sign(piece) && endPiece === 0) {
+                        if (
+                            midPiece !== 0 &&
+                            !isPendingCaptured(midX, midY) &&
+                            Math.sign(midPiece) !== Math.sign(piece) &&
+                            endPiece === 0
+                        ) {
                             jumps.push({ x: endX, y: endY });
                         }
                     }
