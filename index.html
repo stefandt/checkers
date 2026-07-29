@@ -39,6 +39,52 @@
         .cell-light { background-color: #DDB88C; }
         .cell-dark { background-color: #6B4423; }
 
+        .board-coordinate-wrapper {
+            position: absolute;
+        }
+
+        .board-coordinate-wrapper {
+            position: relative;
+            width: calc(100% - 2.5rem);
+            max-width: 500px;
+            margin: 1.25rem;
+        }
+
+        .coordinate-files,
+        .coordinate-ranks {
+            position: absolute;
+            color: #94a3b8;
+            font-size: 0.7rem;
+            font-weight: 700;
+            line-height: 1;
+            pointer-events: none;
+            user-select: none;
+        }
+
+        .coordinate-files {
+            left: 0;
+            width: 100%;
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            text-align: center;
+        }
+
+        .coordinate-files-top { top: -1rem; }
+        .coordinate-files-bottom { bottom: -1rem; }
+
+        .coordinate-ranks {
+            top: 0;
+            height: 100%;
+            display: grid;
+            grid-template-rows: repeat(8, 1fr);
+            align-items: center;
+            text-align: center;
+            width: 1rem;
+        }
+
+        .coordinate-ranks-left { left: -1.25rem; }
+        .coordinate-ranks-right { right: -1.25rem; }
+
         .piece {
             width: 80%;
             height: 80%;
@@ -168,7 +214,13 @@
             <div class="text-gray-400 text-sm font-mono uppercase" id="game-pin-display">Код: -----</div>
         </div>
 
-        <div id="board" class="board-container"></div>
+        <div class="board-coordinate-wrapper">
+            <div id="coordinate-files-top" class="coordinate-files coordinate-files-top"></div>
+            <div id="coordinate-files-bottom" class="coordinate-files coordinate-files-bottom"></div>
+            <div id="coordinate-ranks-left" class="coordinate-ranks coordinate-ranks-left"></div>
+            <div id="coordinate-ranks-right" class="coordinate-ranks coordinate-ranks-right"></div>
+            <div id="board" class="board-container"></div>
+        </div>
     </div>
 
     <!-- Модальне вікно (Заміна alert) -->
@@ -434,6 +486,8 @@
         function renderBoard() {
             const board = document.getElementById('board');
             board.innerHTML = '';
+            const isFlipped = !isLocalMode && myColor === 'black';
+            renderBoardCoordinates(isFlipped);
             
             let possibleMoves = [];
             let possibleJumps = [];
@@ -447,7 +501,6 @@
             for (let row = 0; row < 8; row++) {
                 for (let col = 0; col < 8; col++) {
                     // РОЗВОРОТ ДОШКИ: Тільки в мережевій грі за чорних
-                    const isFlipped = !isLocalMode && myColor === 'black';
                     const y = isFlipped ? 7 - row : row;
                     const x = isFlipped ? 7 - col : col;
 
@@ -510,6 +563,35 @@
                         }
                     }
                     board.appendChild(cell);
+                }
+            }
+        }
+
+        function renderBoardCoordinates(isFlipped) {
+            const files = isFlipped
+                ? ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a']
+                : ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+            const ranks = isFlipped
+                ? ['1', '2', '3', '4', '5', '6', '7', '8']
+                : ['8', '7', '6', '5', '4', '3', '2', '1'];
+
+            for (const id of ['coordinate-files-top', 'coordinate-files-bottom']) {
+                const container = document.getElementById(id);
+                container.innerHTML = '';
+                for (const file of files) {
+                    const label = document.createElement('span');
+                    label.innerText = file;
+                    container.appendChild(label);
+                }
+            }
+
+            for (const id of ['coordinate-ranks-left', 'coordinate-ranks-right']) {
+                const container = document.getElementById(id);
+                container.innerHTML = '';
+                for (const rank of ranks) {
+                    const label = document.createElement('span');
+                    label.innerText = rank;
+                    container.appendChild(label);
                 }
             }
         }
