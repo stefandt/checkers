@@ -455,11 +455,28 @@
                     const isDarkCell = (x + y) % 2 !== 0;
                     cell.className = `cell ${isDarkCell ? 'cell-dark' : 'cell-light'}`;
                     
-                    // Обробка кліку по клітинці (для ходу)
-                    cell.onclick = () => onCellClick(x, y);
-
                     const pieceVal = boardState[y][x];
-                    
+                    const isWhiteTurn = currentTurn === 'white';
+                    const isCurrentTurnPiece = pieceVal !== 0 &&
+                        (isWhiteTurn ? pieceVal > 0 : pieceVal < 0);
+                    const canAct = isLocalMode || currentTurn === myColor;
+                    const isRequiredPiece = mustJumpPieces.length === 0 ||
+                        mustJumpPieces.some(piece => piece.x === x && piece.y === y);
+                    const isSequencePiece = !multiJumpSquare ||
+                        (multiJumpSquare.x === x && multiJumpSquare.y === y);
+                    const canSelectPiece = canAct && isCurrentTurnPiece &&
+                        isRequiredPiece && isSequencePiece;
+                    const isMoveTarget = pieceVal === 0 &&
+                        possibleMoves.some(move => move.x === x && move.y === y);
+                    const isJumpTarget = pieceVal === 0 &&
+                        possibleJumps.some(move => move.x === x && move.y === y);
+                    const isAvailableTarget = isMoveTarget || isJumpTarget;
+
+                    // Недопустимі клітинки не отримують обробник кліку взагалі.
+                    if (canSelectPiece || isAvailableTarget) {
+                        cell.onclick = () => onCellClick(x, y);
+                    }
+
                     if (pieceVal !== 0) {
                         const piece = document.createElement('div');
                         const isWhite = pieceVal > 0;
@@ -482,9 +499,6 @@
                         cell.appendChild(piece);
                     } else if (isDarkCell) {
                         // Малювання підказок для ходів
-                        const isMoveTarget = possibleMoves.some(m => m.x === x && m.y === y);
-                        const isJumpTarget = possibleJumps.some(m => m.x === x && m.y === y);
-                        
                         if (isJumpTarget) {
                             const hint = document.createElement('div');
                             hint.className = 'valid-jump-target';
@@ -628,8 +642,8 @@
             return wasPromoted;
         }
 
-        function isPendingCaptured(x, y) {
-            return pendingCapturedPieces.some(piece => piece.x === x && piece.y === y);
+        function isPendingCaptured(x, y, capturedPieces = pendingCapturedPieces) {
+            return capturedPieces.some(piece => piece.x === x && piece.y === y);
         }
 
         function finalizeCapturedPieces() {
@@ -639,7 +653,41 @@
             pendingCapturedPieces = [];
         }
 
-        function getValidJumps(startX, startY, board) {
+        function kingLandingHasFurtherJump(
+            startX,
+            startY,
+            landing,
+            capturedSquare,
+            board,
+            capturedPieces
+        ) {
+            const simulatedBoard = board.map(row => [...row]);
+            const movingPiece = simulatedBoard[startY][startX];
+
+            simulatedBoard[startY][startX] = 0;
+            simulatedBoard[landing.y][landing.x] = movingPiece;
+
+            const simulatedCapturedPieces = [
+                ...capturedPieces,
+                capturedSquare
+            ];
+
+            return getValidJumps(
+                landing.x,
+                landing.y,
+                simulatedBoard,
+                simulatedCapturedPieces,
+                false
+            ).length > 0;
+        }
+
+        function getValidJumps(
+            startX,
+            startY,
+            board,
+            capturedPieces = pendingCapturedPieces,
+            prioritizeKingContinuation = true
+        ) {
             const piece = board[startY][startX];
             if (piece === 0) return [];
             
@@ -653,12 +701,14 @@
                     let cx = startX + dir.dx;
                     let cy = startY + dir.dy;
                     let foundEnemy = false;
+                    let capturedSquare = null;
+                    const directionJumps = [];
 
                     while (cx >= 0 && cx < 8 && cy >= 0 && cy < 8) {
                         const currentPiece = board[cy][cx];
                         
                         if (currentPiece !== 0) {
-                            if (isPendingCaptured(cx, cy)) {
+                            if (isPendingCaptured(cx, cy, capturedPieces)) {
                                 break;
                             }
                             if (Math.sign(currentPiece) === Math.sign(piece)) {
@@ -666,15 +716,37 @@
                             } else {
                                 if (foundEnemy) break; // Дві ворожі підряд не можна
                                 foundEnemy = true;
+                                capturedSquare = { x: cx, y: cy };
                             }
                         } else if (foundEnemy) {
                             // Порожня клітинка після ворога - сюди можна стати
-                            jumps.push({ x: cx, y: cy });
+                            directionJumps.push({ x: cx, y: cy });
                         }
                         
                         cx += dir.dx;
                         cy += dir.dy;
                     }
+
+                    const continuingJumps = prioritizeKingContinuation
+                        ? directionJumps.filter(landing =>
+                            kingLandingHasFurtherJump(
+                                startX,
+                                startY,
+                                landing,
+                                capturedSquare,
+                                board,
+                                capturedPieces
+                            )
+                        )
+                        : [];
+
+                    // Якщо після взяття можна продовжити бій з певної клітинки,
+                    // дамка не може пролетіти далі й завершити серію достроково.
+                    jumps.push(...(
+                        continuingJumps.length > 0
+                            ? continuingJumps
+                            : directionJumps
+                    ));
                 } else {
                     // Звичайна шашка б'є через 1 клітинку
                     const midX = startX + dir.dx;
@@ -688,7 +760,7 @@
                         
                         if (
                             midPiece !== 0 &&
-                            !isPendingCaptured(midX, midY) &&
+                            !isPendingCaptured(midX, midY, capturedPieces) &&
                             Math.sign(midPiece) !== Math.sign(piece) &&
                             endPiece === 0
                         ) {
